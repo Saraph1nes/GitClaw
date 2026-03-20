@@ -676,14 +676,31 @@ impl App {
         // Only clone the AI settings — UiSettings is not needed in the task.
         let ai_settings = self.settings.ai.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             match ai::generate_commit_message_with(&ai_settings, &diff_text).await {
+                Ok(msg) if msg.is_empty() => {
+                    let _ = tx.send(AppEvent::AiError("AI returned an empty response.".into()));
+                }
                 Ok(msg) => {
                     let _ = tx.send(AppEvent::AiResponse(msg));
                 }
                 Err(e) => {
                     let _ = tx.send(AppEvent::AiError(e.to_string()));
                 }
+            }
+        });
+        // Spawn a watcher task so that if the AI task panics, ai_loading is
+        // reset via an AiError event instead of staying stuck forever.
+        let tx_panic = self.event_tx.clone().unwrap();
+        tokio::spawn(async move {
+            if let Err(e) = handle.await {
+                let panic_box = e.into_panic();
+                let msg = panic_box
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| panic_box.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "AI task panicked unexpectedly.".into());
+                let _ = tx_panic.send(AppEvent::AiError(msg));
             }
         });
     }

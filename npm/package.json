@@ -1,0 +1,25 @@
+{
+  "name": "gitclaw",
+  "version": "0.1.0",
+  "description": "AI-powered terminal Git TUI",
+  "license": "MIT",
+  "keywords": ["git", "tui", "cli", "ai", "terminal"],
+  "homepage": "https://github.com/leoxia/GitClaw",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/leoxia/GitClaw.git"
+  },
+  "bin": {
+    "gitclaw": "./bin/gitclaw"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "optionalDependencies": {
+    "gitclaw-linux-x64": "0.1.0",
+    "gitclaw-linux-arm64": "0.1.0",
+    "gitclaw-darwin-x64": "0.1.0",
+    "gitclaw-darwin-arm64": "0.1.0",
+    "gitclaw-win32-x64": "0.1.0"
+  }
+}

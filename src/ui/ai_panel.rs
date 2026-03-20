@@ -17,7 +17,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     let content: Vec<Line> = if app.ai_loading {
         vec![Line::from(Span::styled(
-            "⟳ Generating commit message...",
+            "⟳ Thinking...",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
