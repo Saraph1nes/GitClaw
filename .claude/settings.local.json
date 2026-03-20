@@ -6,7 +6,9 @@
       "Bash(cargo test:*)",
       "Bash(xargs cat:*)",
       "mcp__MiniMax__web_search",
-      "WebFetch(domain:platform.minimax.io)"
+      "WebFetch(domain:platform.minimax.io)",
+      "Bash(grep -v ^d.*.)",
+      "Bash(find /Users/leoxia/Code/GitClaw/src -type f -name *.rs)"
     ]
   }
 }
