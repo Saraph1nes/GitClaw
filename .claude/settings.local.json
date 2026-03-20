@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
+      "Bash(xargs cat:*)",
+      "mcp__MiniMax__web_search",
+      "WebFetch(domain:platform.minimax.io)"
+    ]
+  }
+}

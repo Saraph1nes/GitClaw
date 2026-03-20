@@ -1,0 +1,20 @@
+[package]
+name = "gitclaw"
+version = "0.1.0"
+edition = "2021"
+description = "AI-powered terminal Git TUI"
+license = "MIT"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+thiserror = "2"
+dirs = "5"
+open = "5"
