@@ -47,7 +47,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ]
     };
 
-    let paragraph = Paragraph::new(content)
+    // Apply scroll offset: inner area = total height minus 2 border lines.
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let max_scroll = content.len().saturating_sub(inner_height);
+    let scroll = app.ai_scroll.min(max_scroll);
+    let visible: Vec<Line> = content.into_iter().skip(scroll).collect();
+
+    let paragraph = Paragraph::new(visible)
         .block(block)
         .wrap(Wrap { trim: false });
 

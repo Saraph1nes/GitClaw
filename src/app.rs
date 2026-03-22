@@ -3,7 +3,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
+use ratatui::layout::Rect;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
@@ -86,6 +87,7 @@ pub struct App {
     pub selected_file: usize,
     pub diff_lines: Vec<DiffLine>,
     pub diff_scroll: usize,
+    pub ai_scroll: usize,
     pub branch_name: String,
     pub modal: Option<Modal>,
     pub ai_suggestion: Option<String>,
@@ -94,6 +96,10 @@ pub struct App {
     pub event_tx: Option<mpsc::Sender<AppEvent>>,
     /// Collapsible tree view over `files`.
     pub file_tree: FileTree,
+    /// Panel areas tracked during render for mouse hit-detection.
+    pub file_list_area: Rect,
+    pub diff_panel_area: Rect,
+    pub ai_panel_area: Rect,
 }
 
 impl App {
@@ -107,6 +113,7 @@ impl App {
             selected_file: 0,
             diff_lines: Vec::new(),
             diff_scroll: 0,
+            ai_scroll: 0,
             branch_name: String::new(),
             modal: None,
             ai_suggestion: None,
@@ -114,6 +121,9 @@ impl App {
             settings,
             event_tx: None,
             file_tree: FileTree::new(&[]),
+            file_list_area: Rect::default(),
+            diff_panel_area: Rect::default(),
+            ai_panel_area: Rect::default(),
         }
     }
 
@@ -139,9 +149,11 @@ impl App {
             // Handle events
             match events.next()? {
                 AppEvent::Key(key) => self.handle_key(key.code, key.modifiers),
+                AppEvent::Mouse(mouse) => self.handle_mouse(mouse.kind, mouse.column, mouse.row),
                 AppEvent::Tick => {}
                 AppEvent::AiResponse(msg) => {
                     self.ai_loading = false;
+                    self.ai_scroll = 0;
                     self.ai_suggestion = Some(msg);
                 }
                 AppEvent::AiError(err) => {
@@ -152,6 +164,46 @@ impl App {
         }
 
         Ok(())
+    }
+
+    fn handle_mouse(&mut self, kind: MouseEventKind, col: u16, row: u16) {
+        // Ignore mouse events when a modal is open.
+        if self.modal.is_some() {
+            return;
+        }
+
+        let (scroll_up, scroll_down) = match kind {
+            MouseEventKind::ScrollUp => (true, false),
+            MouseEventKind::ScrollDown => (false, true),
+            _ => return,
+        };
+
+        // Determine which panel was scrolled by hit-testing the stored areas.
+        let in_file_list = contains(self.file_list_area, col, row);
+        let in_diff_panel = contains(self.diff_panel_area, col, row);
+        let in_ai_panel = self.settings.ui.show_ai_panel && contains(self.ai_panel_area, col, row);
+
+        if in_file_list {
+            if scroll_up && self.selected_file > 0 {
+                self.selected_file -= 1;
+                self.load_selected_diff();
+            } else if scroll_down && self.selected_file + 1 < self.file_tree.visible.len() {
+                self.selected_file += 1;
+                self.load_selected_diff();
+            }
+        } else if in_diff_panel {
+            if scroll_up && self.diff_scroll > 0 {
+                self.diff_scroll -= 1;
+            } else if scroll_down {
+                self.diff_scroll += 1;
+            }
+        } else if in_ai_panel {
+            if scroll_up && self.ai_scroll > 0 {
+                self.ai_scroll -= 1;
+            } else if scroll_down {
+                self.ai_scroll += 1;
+            }
+        }
     }
 
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
@@ -718,4 +770,9 @@ impl App {
             }
         }
     }
+}
+
+/// Returns true if `(col, row)` falls inside `area`.
+fn contains(area: Rect, col: u16, row: u16) -> bool {
+    col >= area.x && col < area.x + area.width && row >= area.y && row < area.y + area.height
 }

@@ -48,6 +48,11 @@ pub async fn generate(api_key: &str, request: &CommitRequest) -> Result<String> 
                 role: "user".to_string(),
                 content: request.user_message(),
             },
+            // Prefill: force the model to continue from inside <commit>.
+            ApiMessage {
+                role: "assistant".to_string(),
+                content: "<commit>\n".to_string(),
+            },
         ],
         max_tokens: 256,
         temperature: 0.3,
@@ -76,6 +81,6 @@ pub async fn generate(api_key: &str, request: &CommitRequest) -> Result<String> 
     parsed
         .choices
         .first()
-        .map(|c| clean_response(&c.message.content))
+        .map(|c| clean_response(&format!("<commit>\n{}", c.message.content)))
         .ok_or_else(|| anyhow!("Empty response from OpenAI"))
 }

@@ -10,7 +10,9 @@
       "Bash(grep -v ^d.*.)",
       "Bash(find /Users/leoxia/Code/GitClaw/src -type f -name *.rs)",
       "mcp__sequential-thinking__sequentialthinking",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(grep:*)"
     ]
   }
 }

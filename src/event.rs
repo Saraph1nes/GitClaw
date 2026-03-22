@@ -3,7 +3,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyEvent};
+use crossterm::event::{self, Event, KeyEvent, MouseEvent};
 
 /// All events that flow through the app's single channel.
 #[derive(Debug)]
@@ -16,6 +16,8 @@ pub enum AppEvent {
     AiResponse(String),
     /// AI call failed.
     AiError(String),
+    /// A mouse event from the user.
+    Mouse(MouseEvent),
 }
 
 /// Spawns a background thread that reads crossterm events and sends ticks.
@@ -40,6 +42,11 @@ impl EventHandler {
                         match evt {
                             Event::Key(key) => {
                                 if event_tx.send(AppEvent::Key(key)).is_err() {
+                                    return;
+                                }
+                            }
+                            Event::Mouse(mouse) => {
+                                if event_tx.send(AppEvent::Mouse(mouse)).is_err() {
                                     return;
                                 }
                             }

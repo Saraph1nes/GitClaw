@@ -37,33 +37,17 @@ pub struct ApiErrorDetail {
 }
 
 /// System prompt for commit message generation.
-pub const SYSTEM_PROMPT: &str = "You are an expert at writing git commit messages in Conventional Commits format.\n\
+pub const SYSTEM_PROMPT: &str = "You are an expert at writing git commit messages.\n\
 \n\
-You may reason inside <think>...</think> before answering.\n\
-Then wrap your final commit message in <commit>...</commit> tags.\n\
+Your response must be a single Conventional Commit message wrapped in <commit>...</commit> tags.\n\
 \n\
-Commit message format:\n\
-  <type>(<scope>): <short description>   ← required, max 72 chars\n\
-  <blank line>\n\
-  <optional body>                        ← plain prose, only when it adds real context\n\
+Format inside <commit>:\n\
+  type(scope): short description   ← max 72 chars, required\n\
+  \n\
+  optional body                    ← plain prose only, omit if not needed\n\
 \n\
 Valid types: feat, fix, refactor, docs, style, test, chore, perf, ci, build\n\
-\n\
-Rules for the content inside <commit>:\n\
-1. First line MUST be: type(scope): description  — no prefix, no label, no quotes.\n\
-2. No markdown: no bullets, no backticks, no bold, no headers.\n\
-3. Body lines are plain prose sentences, not lists.\n\
-4. Scope is optional but use it when it clarifies which area changed.\n\
-\n\
-Example output:\n\
-<think>\n\
-The diff adds JWT refresh logic to the auth module.\n\
-</think>\n\
-<commit>\n\
-feat(auth): add JWT refresh token support\n\
-\n\
-Tokens now auto-renew 60 s before expiry to prevent silent session drops.\n\
-</commit>";
+Scope is optional. No markdown, no bullet points, no explanations outside the tags.";
 
 /// Extract the final commit message from the model's raw output.
 ///
@@ -84,9 +68,17 @@ pub fn clean_response(raw: &str) -> String {
         } else {
             after_open
         };
-        let result = content.trim().to_string();
-        if !result.is_empty() {
-            return result;
+        let trimmed = content.trim();
+        if !trimmed.is_empty() {
+            // The commit block itself may contain <think> reasoning — strip it.
+            let cleaned = strip_think_blocks(trimmed);
+            let result = cleaned.trim().to_string();
+            if !result.is_empty() {
+                // Also run the conventional-commit extractor in case prose
+                // reasoning leaked into the commit block.
+                return extract_conventional_commit(&result)
+                    .unwrap_or(result);
+            }
         }
     }
 
@@ -98,33 +90,14 @@ pub fn clean_response(raw: &str) -> String {
     }
 
     // ── 3. Strip <think> blocks, return remainder ─────────────────────────────
-    let mut out = String::with_capacity(raw.len());
-    let mut rest = raw;
-    let mut last_think_content: Option<&str> = None;
-
-    while let Some(start) = rest.find("<think>") {
-        out.push_str(&rest[..start]);
-        let inner_start = start + "<think>".len();
-        match rest[start..].find("</think>") {
-            Some(end_offset) => {
-                last_think_content = Some(&rest[inner_start..start + end_offset]);
-                rest = &rest[start + end_offset + "</think>".len()..];
-            }
-            None => {
-                last_think_content = Some(&rest[inner_start..]);
-                rest = "";
-            }
-        }
-    }
-    out.push_str(rest);
-
+    let out = strip_think_blocks(raw);
     let result = out.trim().to_string();
     if !result.is_empty() {
         return result;
     }
 
     // ── 4. Last resort: inner content of the last think block ─────────────────
-    last_think_content
+    last_think_inner(raw)
         .map(|s| {
             // Recursively clean the think content — it may itself contain a
             // conventional commit line buried in reasoning.
@@ -132,6 +105,48 @@ pub fn clean_response(raw: &str) -> String {
             extract_conventional_commit(inner).unwrap_or_else(|| inner.to_string())
         })
         .unwrap_or_default()
+}
+
+/// Remove all `<think>...</think>` blocks (including unclosed ones) from `text`
+/// and return the remainder.
+fn strip_think_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        let inner_start = start + "<think>".len();
+        match rest[inner_start..].find("</think>") {
+            Some(end_offset) => {
+                rest = &rest[inner_start + end_offset + "</think>".len()..];
+            }
+            None => {
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Return the inner content of the **last** `<think>` block found in `text`,
+/// or `None` if there is no `<think>` tag.
+fn last_think_inner(text: &str) -> Option<String> {
+    let mut last: Option<String> = None;
+    let mut rest = text;
+    while let Some(start) = rest.find("<think>") {
+        let inner_start = start + "<think>".len();
+        match rest[inner_start..].find("</think>") {
+            Some(end_offset) => {
+                last = Some(rest[inner_start..inner_start + end_offset].to_string());
+                rest = &rest[inner_start + end_offset + "</think>".len()..];
+            }
+            None => {
+                last = Some(rest[inner_start..].to_string());
+                rest = "";
+            }
+        }
+    }
+    last
 }
 
 /// Scan `text` for a line that looks like a Conventional Commit header and
@@ -259,6 +274,13 @@ mod tests {
             clean_response(raw),
             "feat(auth): add JWT refresh token support\n\nTokens now auto-renew 60 s before expiry."
         );
+    }
+
+    #[test]
+    fn test_think_inside_commit_tag_stripped() {
+        // Model puts <think> reasoning inside the <commit> block — must be stripped.
+        let raw = "<commit>\n<think>let me think...</think>\nfeat: add login\n</commit>";
+        assert_eq!(clean_response(raw), "feat: add login");
     }
 
     #[test]

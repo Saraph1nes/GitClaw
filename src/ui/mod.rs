@@ -46,7 +46,7 @@ pub const MODEL_NAMES: &[&str] = &[
 ];
 
 /// Main render function — draws all panels and modals.
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut crate::app::App) {
     let size = frame.area();
 
     // Build vertical layout: top panels + optional AI panel + help bar.
@@ -71,7 +71,12 @@ pub fn render(frame: &mut Frame, app: &App) {
     file_list::render(frame, app, top_chunks[0]);
     diff_panel::render(frame, app, top_chunks[1]);
 
+    // Store panel areas for mouse hit-detection.
+    app.file_list_area = top_chunks[0];
+    app.diff_panel_area = top_chunks[1];
+
     let help_bar_idx = if app.settings.ui.show_ai_panel {
+        app.ai_panel_area = main_chunks[1];
         ai_panel::render(frame, app, main_chunks[1]);
         2
     } else {
