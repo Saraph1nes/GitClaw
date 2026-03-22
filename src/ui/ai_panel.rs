@@ -24,7 +24,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ))]
     } else if let Some(ref suggestion) = app.ai_suggestion {
         let mut lines = vec![Line::from(Span::styled(
-            "AI Suggestion (Enter to accept, c to edit):",
+            "AI Suggestion (Enter to open commit dialog, c to commit):",
             Style::default().fg(Color::Green),
         ))];
         for line in suggestion.lines() {

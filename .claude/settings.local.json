@@ -12,7 +12,9 @@
       "mcp__sequential-thinking__sequentialthinking",
       "Bash(cargo check:*)",
       "Bash(cargo clippy:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(gitclaw --version)",
+      "Read(//Users/leoxia/.cargo/bin/**)"
     ]
   }
 }

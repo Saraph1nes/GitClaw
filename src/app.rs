@@ -154,7 +154,12 @@ impl App {
                 AppEvent::AiResponse(msg) => {
                     self.ai_loading = false;
                     self.ai_scroll = 0;
-                    self.ai_suggestion = Some(msg);
+                    self.ai_suggestion = Some(msg.clone());
+                    // Auto-open the commit dialog so the user can immediately
+                    // review / edit and commit without extra key presses.
+                    if self.modal.is_none() {
+                        self.modal = Some(Modal::CommitInput(msg));
+                    }
                 }
                 AppEvent::AiError(err) => {
                     self.ai_loading = false;
@@ -220,6 +225,10 @@ impl App {
             }
             KeyCode::Tab => {
                 self.focus = self.focus.next();
+                // Skip AiPanel if it's hidden
+                if self.focus == Focus::AiPanel && !self.settings.ui.show_ai_panel {
+                    self.focus = self.focus.next();
+                }
             }
             // ── File list navigation ──────────────────────────────────────────
             KeyCode::Up | KeyCode::Char('k') if self.focus == Focus::FileList => {
@@ -723,6 +732,7 @@ impl App {
 
         self.ai_loading = true;
         self.ai_suggestion = None;
+        self.settings.ui.show_ai_panel = true;
 
         let tx = self.event_tx.clone().unwrap();
         // Only clone the AI settings — UiSettings is not needed in the task.

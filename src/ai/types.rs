@@ -37,17 +37,40 @@ pub struct ApiErrorDetail {
 }
 
 /// System prompt for commit message generation.
-pub const SYSTEM_PROMPT: &str = "You are an expert at writing git commit messages.\n\
+pub const SYSTEM_PROMPT: &str = "\
+You are a git commit message generator. Your job is to read a diff and produce \
+one Conventional Commit message — nothing else.\n\
 \n\
-Your response must be a single Conventional Commit message wrapped in <commit>...</commit> tags.\n\
+STRICT OUTPUT RULES:\n\
+- Output ONLY the commit message inside <commit>...</commit> tags.\n\
+- Do NOT write any analysis, reasoning, explanations, lists, or preamble.\n\
+- Do NOT start with phrases like \"Let me\", \"I will\", \"Here is\", etc.\n\
+- No markdown, no bullet points, no code blocks outside the tags.\n\
 \n\
-Format inside <commit>:\n\
-  type(scope): short description   ← max 72 chars, required\n\
-  \n\
-  optional body                    ← plain prose only, omit if not needed\n\
+FORMAT (inside <commit>):\n\
+  type(scope): short description   ← imperative mood, max 72 chars\n\
+\n\
+  optional body                    ← plain prose only, max 3 sentences,\n\
+                                     omit entirely if not needed\n\
 \n\
 Valid types: feat, fix, refactor, docs, style, test, chore, perf, ci, build\n\
-Scope is optional. No markdown, no bullet points, no explanations outside the tags.";
+Scope is optional.\n\
+\n\
+EXAMPLES:\n\
+<commit>\n\
+feat(auth): add JWT refresh token support\n\
+</commit>\n\
+\n\
+<commit>\n\
+fix: prevent panic when staged diff is empty\n\
+</commit>\n\
+\n\
+<commit>\n\
+refactor(ui): simplify file tree rendering\n\
+\n\
+Extract directory expansion logic into a dedicated method to reduce\n\
+coupling between FileTree and the render layer.\n\
+</commit>";
 
 /// Extract the final commit message from the model's raw output.
 ///
@@ -71,60 +94,88 @@ pub fn clean_response(raw: &str) -> String {
         let trimmed = content.trim();
         if !trimmed.is_empty() {
             // The commit block itself may contain <think> reasoning — strip it.
+            // This also handles bare </think> closers (model reasoning leaked in).
             let cleaned = strip_think_blocks(trimmed);
             let result = cleaned.trim().to_string();
             if !result.is_empty() {
-                // Also run the conventional-commit extractor in case prose
-                // reasoning leaked into the commit block.
-                return extract_conventional_commit(&result)
-                    .unwrap_or(result);
+                // Only return if there's a valid CC header.  If the block contains
+                // only prose analysis (no CC line), fall through so the caller gets
+                // an empty string rather than a wall of reasoning text.
+                if let Some(msg) = extract_conventional_commit(&result) {
+                    return msg;
+                }
+                // No CC header found — the block is pure prose, fall through.
             }
+            // commit block was entirely reasoning (stripped to empty) — fall through.
         }
     }
 
-    // ── 2. Scan for a Conventional Commits header line ────────────────────────
-    // Pattern: type[(scope)]: description
-    // Collect that line plus any immediately following body (blank line then prose).
-    if let Some(msg) = extract_conventional_commit(raw) {
+    // ── 2. Strip <think> blocks first, then scan for a CC header ─────────────
+    // We must strip before extracting so that reasoning prose that happens to
+    // start with a valid CC prefix (e.g. "feat: or refactor: – …") is not
+    // mistaken for the real commit line.
+    // Also remove any stray <commit>/<commit> tag fragments that remain when
+    // the model returns an empty or malformed commit block — these must never
+    // be shown to the user.
+    let stripped = strip_think_blocks(raw);
+    let stripped = stripped
+        .replace("<commit>", "")
+        .replace("</commit>", "");
+    let stripped = stripped.trim();
+
+    if let Some(msg) = extract_conventional_commit(stripped) {
         return msg;
     }
 
-    // ── 3. Strip <think> blocks, return remainder ─────────────────────────────
-    let out = strip_think_blocks(raw);
-    let result = out.trim().to_string();
-    if !result.is_empty() {
-        return result;
-    }
-
-    // ── 4. Last resort: inner content of the last think block ─────────────────
+    // ── 3. Last resort: inner content of the last think block ─────────────────
+    // Only return if a CC header is found inside; never return raw prose.
     last_think_inner(raw)
-        .map(|s| {
-            // Recursively clean the think content — it may itself contain a
-            // conventional commit line buried in reasoning.
+        .and_then(|s| {
             let inner = s.trim();
-            extract_conventional_commit(inner).unwrap_or_else(|| inner.to_string())
+            extract_conventional_commit(inner)
         })
         .unwrap_or_default()
 }
 
 /// Remove all `<think>...</think>` blocks (including unclosed ones) from `text`
 /// and return the remainder.
+///
+/// Also handles the case where the model emits a bare `</think>` with no
+/// matching opener — this happens when assistant-prefill places `<commit>\n`
+/// *after* an implicit `<think>` block that the model started before our
+/// prefill.  Everything up to and including a bare `</think>` is reasoning
+/// that leaked through, so we discard it.
 fn strip_think_blocks(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(start) = rest.find("<think>") {
-        out.push_str(&rest[..start]);
-        let inner_start = start + "<think>".len();
-        match rest[inner_start..].find("</think>") {
-            Some(end_offset) => {
-                rest = &rest[inner_start + end_offset + "</think>".len()..];
+    loop {
+        // Find the next tag — either opener or closer.
+        let think_open  = rest.find("<think>");
+        let think_close = rest.find("</think>");
+
+        match (think_open, think_close) {
+            // Paired block: <think>...</think>
+            (Some(open), Some(close)) if open < close => {
+                out.push_str(&rest[..open]);
+                let after_close = close + "</think>".len();
+                rest = &rest[after_close..];
             }
-            None => {
-                rest = "";
+            // Bare </think> with no preceding <think>: everything before it
+            // is orphaned reasoning — discard it.
+            (None, Some(close)) | (Some(_), Some(close)) => {
+                rest = &rest[close + "</think>".len()..];
+            }
+            // Unclosed <think> — discard everything from here.
+            (Some(_open), None) => {
+                break;
+            }
+            // No more tags.
+            (None, None) => {
+                out.push_str(rest);
+                break;
             }
         }
     }
-    out.push_str(rest);
     out
 }
 
@@ -305,9 +356,133 @@ mod tests {
     fn test_empty_input() {
         assert_eq!(clean_response(""), "");
     }
-}
 
-/// Request to generate a commit message.
+    #[test]
+    fn test_bare_close_think_tag_discarded() {
+        // Claude uses assistant-prefill "<commit>\n", then starts reasoning
+        // inside the commit block with an implicit <think> that has no opener
+        // visible to us — only the </think> closer leaks through.
+        // Everything before the bare </think> is reasoning prose and must be
+        // stripped; only the actual commit line after it should survive.
+        let raw = "<commit>\n\
+feat(core): improve commit extraction from think blocks\n\
+\n\
+Wait, this doesn't add a new feature – it's a refactor. Let me reconsider.\n\
+\n\
+refactor(commit): streamline commit message extraction logic\n\
+\n\
+This better captures it. Let me check the max length — it's under 72 chars.\n\
+</think>\n\
+\n\
+refactor(commit): streamline commit message extraction logic\n\
+</commit>";
+        assert_eq!(
+            clean_response(raw),
+            "refactor(commit): streamline commit message extraction logic"
+        );
+    }
+
+    #[test]
+    fn test_bare_close_think_no_opener() {
+        // Simpler variant: text starts with reasoning, bare </think> in the middle,
+        // then the real commit line.
+        let raw = "some reasoning prose\n</think>\nfeat: add feature";
+        assert_eq!(clean_response(raw), "feat: add feature");
+    }
+
+    #[test]
+    fn test_pure_prose_no_cc_header_returns_empty() {
+        // Model returns only analysis prose with no CC header at all.
+        // clean_response must return "" rather than dumping the whole wall of text.
+        let raw = "<commit>\nLet me analyze the diff to understand what changes were made:\n\
+\n\
+1. The `clean_response` function was refactored to handle `<think>` blocks better\n\
+2. The function now:\n\
+   - First looks for a `<commit>...</commit>` block\n\
+   - If found, it strips `<think>` blocks from within the commit content\n\
+   - Then tries to extract a conventional commit from the cleaned content\n\
+   - Falls back to stripping all `<think>` blocks from the raw text\n\
+   - Finally, as a last resort, uses the inner content of the last `<think>` block\n\
+\n\
+3. A new helper function `strip_think_blocks` was extracted to remove all `<think>...";
+        let result = clean_response(raw);
+        assert_eq!(
+            result, "",
+            "pure analysis prose must not be returned as a commit message, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_single_commit_tag_not_leaked() {
+        // When the model returns only "<commit>" with no closing tag and no content,
+        // the raw passed to clean_response is "<commit>\n".
+        // Result must be empty — the tag itself must NOT be shown to the user.
+        let raw = "<commit>\n";
+        assert_eq!(clean_response(raw), "");
+    }
+
+    #[test]
+    fn test_single_commit_tag_with_content_after() {
+        // Model returns content but the commit tag was never closed.
+        let raw = "<commit>\nfeat: add login\n";
+        assert_eq!(clean_response(raw), "feat: add login");
+    }
+
+    #[test]
+    fn test_reasoning_with_fake_cc_line_then_bare_think_close() {
+        // Model emits reasoning that contains a line *starting* with a valid
+        // CC prefix ("feat: or refactor: …") followed by a bare </think>, then
+        // the actual commit message.  The fake CC line must NOT be returned;
+        // only the real line after </think> should survive.
+        let raw = "<commit>\nfeat: or refactor: – since this is improving code structure \
+without changing external behavior, refactor is more accurate.\n\n\
+Looking at the rules: feat for new features, fix for bug\n\
+</think>\n\nrefactor: streamline commit extraction logic\n</commit>";
+        assert_eq!(
+            clean_response(raw),
+            "refactor: streamline commit extraction logic"
+        );
+    }
+
+    #[test]
+    fn test_think_reasoning_with_fake_cc_no_commit_tag() {
+        // Without <commit> tags: reasoning block has a fake CC header, real commit
+        // appears after </think>.
+        let raw = "<think>feat: or refactor: – improving structure\n\
+Looking at the rules: feat for new features, fix for bug\n\
+</think>\n\nrefactor: streamline commit extraction logic";
+        assert_eq!(
+            clean_response(raw),
+            "refactor: streamline commit extraction logic"
+        );
+    }
+
+    #[test]
+    fn test_screenshot_bug_reasoning_leaks_into_commit_modal() {
+        // Reproduces the exact screenshot scenario:
+        // The AI client prefixes the raw response with "<commit>\n".
+        // Model did NOT wrap output in <commit> tags itself — it just output
+        // reasoning prose that happens to start with a fake CC header, followed
+        // by a bare </think>, but NO real commit line after it.
+        // Expected: fall back gracefully, NOT show raw reasoning in the modal.
+        let raw = "<commit>\n\
+feat: or refactor: \u{2013} since this is improving code structure without changing external behavior, \
+refactor is more accurate.\n\
+\n\
+Looking at the rules: feat for new features, fix for bug\n\
+</think>";
+        // The result must NOT contain "</think>" or raw reasoning prose.
+        let result = clean_response(raw);
+        assert!(
+            !result.contains("</think>"),
+            "clean_response should strip </think> but got: {result:?}"
+        );
+        assert!(
+            !result.contains("Looking at the rules"),
+            "clean_response should strip reasoning prose but got: {result:?}"
+        );
+    }
+}
 #[derive(Debug, Clone)]
 pub struct CommitRequest {
     pub diff: String,

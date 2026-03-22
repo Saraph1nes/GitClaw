@@ -53,7 +53,7 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             tick_rate_ms: 250,
-            show_ai_panel: true,
+            show_ai_panel: false,
         }
     }
 }
