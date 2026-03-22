@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "AI-powered terminal Git TUI"
 license = "MIT"
+repository = "https://github.com/Saraph1nes/GitClaw"
+homepage = "https://github.com/Saraph1nes/GitClaw"
+readme = "README.md"
+keywords = ["git", "tui", "ai", "terminal", "commit"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 ratatui = "0.29"
