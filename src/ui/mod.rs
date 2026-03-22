@@ -17,8 +17,12 @@ GitClaw — AI-Powered Git TUI
 
 Navigation:
   ↑/↓ or j/k    Navigate file list / scroll diff
-  →/l            Expand directory
-  ←/h            Collapse directory (or jump to parent)
+  h/l            Diff: horizontal scroll (when diff focused)
+  n / N          Diff: jump to next / previous hunk
+  v              Diff: toggle unified / side-by-side view
+  z              Diff: toggle collapsed mode (hide unchanged lines)
+  →/l            File list: expand directory
+  ←/h            File list: collapse directory (or jump to parent)
   Enter          Dir: toggle expand/collapse  File: load diff
   Tab            Cycle focus: Files → Diff → AI
 
@@ -61,19 +65,29 @@ pub fn render(frame: &mut Frame, app: &mut crate::app::App) {
         .constraints(constraints)
         .split(size);
 
-    // Top: file list (40%) | diff panel (60%)
+    // Top: file list (fixed 40 cols) | diff panel (remaining) — diff panel
+    // is only shown when a file is actively selected (diff_lines non-empty).
+    let show_diff = !app.diff_lines.is_empty();
+    let top_constraints: Vec<Constraint> = if show_diff {
+        vec![Constraint::Length(40), Constraint::Min(0)]
+    } else {
+        vec![Constraint::Min(0)]
+    };
+
     let top_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints(top_constraints)
         .split(main_chunks[0]);
 
     // Render panels
     file_list::render(frame, app, top_chunks[0]);
-    diff_panel::render(frame, app, top_chunks[1]);
+    if show_diff {
+        diff_panel::render(frame, app, top_chunks[1]);
+    }
 
     // Store panel areas for mouse hit-detection.
     app.file_list_area = top_chunks[0];
-    app.diff_panel_area = top_chunks[1];
+    app.diff_panel_area = if show_diff { top_chunks[1] } else { Rect::default() };
 
     let help_bar_idx = if app.settings.ui.show_ai_panel {
         app.ai_panel_area = main_chunks[1];
@@ -93,7 +107,7 @@ pub fn render(frame: &mut Frame, app: &mut crate::app::App) {
 fn render_help_bar(frame: &mut Frame, app: &App, area: Rect) {
     let hints = match app.focus {
         Focus::FileList => "↑↓:navigate  →/l:expand  ←/h:collapse  Enter:toggle/diff  a:stage  u:unstage  Tab:switch  c:commit  i:AI  m:model  b:branches  s:stash  ?:help  q:quit",
-        Focus::DiffPanel => "j/k:scroll  Tab:switch  a:stage  u:unstage  c:commit  i:AI  q:quit",
+        Focus::DiffPanel => "j/k:scroll  h/l:hscroll  n/N:next/prev hunk  z:collapse  v:split  Tab:switch  a:stage  u:unstage  c:commit  i:AI  q:quit",
         Focus::AiPanel => "Enter:accept suggestion  Tab:switch  c:commit  i:AI  q:quit",
     };
 

@@ -6,7 +6,7 @@ use ratatui::Frame;
 
 use crate::app::{App, Focus};
 
-pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::AiPanel;
     let border_color = if focused { Color::Cyan } else { Color::DarkGray };
 
@@ -50,6 +50,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     // Apply scroll offset: inner area = total height minus 2 border lines.
     let inner_height = area.height.saturating_sub(2) as usize;
     let max_scroll = content.len().saturating_sub(inner_height);
+    // Write back so event handlers use the exact same bound.
+    app.ai_scroll_max = max_scroll;
     let scroll = app.ai_scroll.min(max_scroll);
     let visible: Vec<Line> = content.into_iter().skip(scroll).collect();
 

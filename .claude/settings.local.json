@@ -14,7 +14,8 @@
       "Bash(cargo clippy:*)",
       "Bash(grep:*)",
       "Bash(gitclaw --version)",
-      "Read(//Users/leoxia/.cargo/bin/**)"
+      "Read(//Users/leoxia/.cargo/bin/**)",
+      "mcp__MiniMax__understand_image"
     ]
   }
 }

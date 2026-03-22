@@ -23,11 +23,17 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
 
+    // Virtual scrolling: only build ListItems for the visible viewport window.
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let scroll = app.file_list_scroll;
+
     let items: Vec<ListItem> = app
         .file_tree
         .visible
         .iter()
         .enumerate()
+        .skip(scroll)
+        .take(inner_height)
         .map(|(i, row)| {
             let selected = i == app.selected_file;
             let indent = "  ".repeat(row.depth);

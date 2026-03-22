@@ -61,8 +61,13 @@ impl FileEntry {
 pub enum DiffLineKind {
     Added,
     Removed,
+    /// File header lines: `diff --git`, `index`, `---`, `+++`
     Header,
+    /// Hunk header lines starting with `@@`
+    HunkHeader,
     Context,
+    /// Binary file placeholder
+    Binary,
 }
 
 /// A single line in a diff output.
@@ -70,6 +75,10 @@ pub enum DiffLineKind {
 pub struct DiffLine {
     pub content: String,
     pub kind: DiffLineKind,
+    /// Line number in the old (left) file, if applicable
+    pub old_lineno: Option<u32>,
+    /// Line number in the new (right) file, if applicable
+    pub new_lineno: Option<u32>,
 }
 
 impl DiffLine {
@@ -77,6 +86,8 @@ impl DiffLine {
         Self {
             content,
             kind: DiffLineKind::Context,
+            old_lineno: None,
+            new_lineno: None,
         }
     }
 }

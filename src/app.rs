@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
@@ -12,11 +12,18 @@ use crate::ai;
 use crate::config::Settings;
 use crate::event::{AppEvent, EventHandler};
 use crate::git;
-use crate::git::{DiffLine, FileEntry};
+use crate::git::{DiffLine, DiffLineKind, FileEntry};
 use crate::ui;
 use crate::ui::MODEL_NAMES;
 use crate::ui::file_tree::{FileTree, RowKind};
 
+
+/// How to render the diff panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffViewMode {
+    Unified,
+    SideBySide,
+}
 
 /// Which panel currently has focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +94,14 @@ pub struct App {
     pub selected_file: usize,
     pub diff_lines: Vec<DiffLine>,
     pub diff_scroll: usize,
+    /// Horizontal scroll offset (in columns) for the diff panel.
+    pub diff_hscroll: usize,
+    /// Unified or side-by-side view mode.
+    pub diff_view_mode: DiffViewMode,
+    /// Collapsed mode: only show changed hunks + minimal context.
+    pub diff_collapsed: bool,
+    /// Positions (raw diff_lines indices) of each HunkHeader in the current diff.
+    pub hunk_positions: Vec<usize>,
     pub ai_scroll: usize,
     pub branch_name: String,
     pub modal: Option<Modal>,
@@ -100,6 +115,17 @@ pub struct App {
     pub file_list_area: Rect,
     pub diff_panel_area: Rect,
     pub ai_panel_area: Rect,
+    /// Virtual scroll offset for the file list (first visible row index).
+    pub file_list_scroll: usize,
+    /// Maximum valid diff_scroll value — written by the renderer each frame so
+    /// event handlers can clamp without duplicating the display_total logic.
+    pub diff_scroll_max: usize,
+    /// Maximum valid ai_scroll value — written by the renderer each frame.
+    pub ai_scroll_max: usize,
+    /// Whether a diff reload is pending (debounced navigation).
+    pending_diff_load: bool,
+    /// Timestamp of the last file-list navigation event.
+    last_nav_time: Option<Instant>,
 }
 
 impl App {
@@ -113,6 +139,10 @@ impl App {
             selected_file: 0,
             diff_lines: Vec::new(),
             diff_scroll: 0,
+            diff_hscroll: 0,
+            diff_view_mode: DiffViewMode::Unified,
+            diff_collapsed: false,
+            hunk_positions: Vec::new(),
             ai_scroll: 0,
             branch_name: String::new(),
             modal: None,
@@ -124,6 +154,11 @@ impl App {
             file_list_area: Rect::default(),
             diff_panel_area: Rect::default(),
             ai_panel_area: Rect::default(),
+            file_list_scroll: 0,
+            diff_scroll_max: 0,
+            ai_scroll_max: 0,
+            pending_diff_load: false,
+            last_nav_time: None,
         }
     }
 
@@ -150,7 +185,9 @@ impl App {
             match events.next()? {
                 AppEvent::Key(key) => self.handle_key(key.code, key.modifiers),
                 AppEvent::Mouse(mouse) => self.handle_mouse(mouse.kind, mouse.column, mouse.row),
-                AppEvent::Tick => {}
+                AppEvent::Tick => {
+                    self.maybe_load_pending_diff();
+                }
                 AppEvent::AiResponse(msg) => {
                     self.ai_loading = false;
                     self.ai_scroll = 0;
@@ -191,21 +228,23 @@ impl App {
         if in_file_list {
             if scroll_up && self.selected_file > 0 {
                 self.selected_file -= 1;
-                self.load_selected_diff();
+                self.clamp_file_list_scroll();
+                self.mark_diff_pending();
             } else if scroll_down && self.selected_file + 1 < self.file_tree.visible.len() {
                 self.selected_file += 1;
-                self.load_selected_diff();
+                self.clamp_file_list_scroll();
+                self.mark_diff_pending();
             }
         } else if in_diff_panel {
             if scroll_up && self.diff_scroll > 0 {
                 self.diff_scroll -= 1;
-            } else if scroll_down {
+            } else if scroll_down && self.diff_scroll < self.diff_scroll_max {
                 self.diff_scroll += 1;
             }
         } else if in_ai_panel {
             if scroll_up && self.ai_scroll > 0 {
                 self.ai_scroll -= 1;
-            } else if scroll_down {
+            } else if scroll_down && self.ai_scroll < self.ai_scroll_max {
                 self.ai_scroll += 1;
             }
         }
@@ -234,13 +273,15 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') if self.focus == Focus::FileList => {
                 if self.selected_file > 0 {
                     self.selected_file -= 1;
-                    self.load_selected_diff();
+                    self.clamp_file_list_scroll();
+                    self.mark_diff_pending();
                 }
             }
             KeyCode::Down | KeyCode::Char('j') if self.focus == Focus::FileList => {
                 if self.selected_file + 1 < self.file_tree.visible.len() {
                     self.selected_file += 1;
-                    self.load_selected_diff();
+                    self.clamp_file_list_scroll();
+                    self.mark_diff_pending();
                 }
             }
             // → / l  →  expand directory (no-op on files)
@@ -315,7 +356,50 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') if self.focus == Focus::DiffPanel => {
-                self.diff_scroll += 1;
+                if self.diff_scroll < self.diff_scroll_max {
+                    self.diff_scroll += 1;
+                }
+            }
+            // Diff horizontal scrolling
+            KeyCode::Right | KeyCode::Char('l') if self.focus == Focus::DiffPanel => {
+                self.diff_hscroll = self.diff_hscroll.saturating_add(4);
+            }
+            KeyCode::Left | KeyCode::Char('h') if self.focus == Focus::DiffPanel => {
+                self.diff_hscroll = self.diff_hscroll.saturating_sub(4);
+            }
+            // Toggle unified / side-by-side diff view
+            KeyCode::Char('v') if self.focus == Focus::DiffPanel => {
+                self.diff_view_mode = match self.diff_view_mode {
+                    DiffViewMode::Unified => DiffViewMode::SideBySide,
+                    DiffViewMode::SideBySide => DiffViewMode::Unified,
+                };
+                self.diff_scroll = 0;
+            }
+            // Jump to next hunk
+            KeyCode::Char('n') if self.focus == Focus::DiffPanel => {
+                if let Some(&pos) = self
+                    .hunk_positions
+                    .iter()
+                    .find(|&&p| p > self.diff_scroll)
+                {
+                    self.diff_scroll = pos;
+                }
+            }
+            // Jump to previous hunk
+            KeyCode::Char('N') if self.focus == Focus::DiffPanel => {
+                if let Some(&pos) = self
+                    .hunk_positions
+                    .iter()
+                    .rev()
+                    .find(|&&p| p < self.diff_scroll)
+                {
+                    self.diff_scroll = pos;
+                }
+            }
+            // Toggle collapsed mode (only show changed hunks)
+            KeyCode::Char('z') if self.focus == Focus::DiffPanel => {
+                self.diff_collapsed = !self.diff_collapsed;
+                self.diff_scroll = 0;
             }
             // Git operations
             KeyCode::Char('a') => self.stage_selected(),
@@ -369,6 +453,7 @@ impl App {
                             Ok(_) => {
                                 self.modal = None;
                                 self.ai_suggestion = None;
+                                self.settings.ui.show_ai_panel = false;
                                 self.refresh_status();
                                 self.diff_lines.clear();
                             }
@@ -614,11 +699,56 @@ impl App {
                 Ok(lines) => {
                     self.diff_lines = lines;
                     self.diff_scroll = 0;
+                    self.diff_hscroll = 0;
+                    self.hunk_positions = self
+                        .diff_lines
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, l)| l.kind == DiffLineKind::HunkHeader)
+                        .map(|(i, _)| i)
+                        .collect();
                 }
                 Err(e) => {
                     self.diff_lines = vec![DiffLine::context(format!("Error: {}", e))];
                 }
             }
+        }
+    }
+
+    // ── Debounce & virtual-scroll helpers ─────────────────────────────────────
+
+    /// Mark that a diff reload is needed; start (or reset) the debounce timer.
+    fn mark_diff_pending(&mut self) {
+        self.pending_diff_load = true;
+        self.last_nav_time = Some(Instant::now());
+    }
+
+    /// Called every Tick. Loads the diff if navigation has settled for ≥50 ms.
+    fn maybe_load_pending_diff(&mut self) {
+        if !self.pending_diff_load {
+            return;
+        }
+        const DEBOUNCE_MS: u128 = 50;
+        if let Some(t) = self.last_nav_time {
+            if t.elapsed().as_millis() >= DEBOUNCE_MS {
+                self.pending_diff_load = false;
+                self.last_nav_time = None;
+                self.load_selected_diff();
+            }
+        }
+    }
+
+    /// Keep `file_list_scroll` so that `selected_file` stays in the viewport.
+    /// Must be called after every `selected_file` change.
+    fn clamp_file_list_scroll(&mut self) {
+        let viewport = self.file_list_area.height.saturating_sub(2) as usize;
+        if viewport == 0 {
+            return;
+        }
+        if self.selected_file < self.file_list_scroll {
+            self.file_list_scroll = self.selected_file;
+        } else if self.selected_file >= self.file_list_scroll + viewport {
+            self.file_list_scroll = self.selected_file + 1 - viewport;
         }
     }
 
